@@ -11,10 +11,10 @@ warnings.filterwarnings("ignore")
 mz = 91.1876
 m_warden = 8165.86     
 m_melt = 257608.53     
-m_gut = 2.986e+16      # Exact central value from your paper
+m_gut = 2.986e+16      # Exact central value from  paper
 
 a_em_inv_mz = 127.955
-s2w = 0.23119          # Exact post-dicted value from your paper
+s2w = 0.23119          # Exact post-dicted value from  paper
 as_mz = 0.1179
 delta_sm_mz = np.array([0.0012, 0.0045, -0.0110])
 
