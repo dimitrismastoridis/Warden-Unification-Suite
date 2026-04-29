@@ -1,6 +1,6 @@
 # Warden Sector Precision Unification and Monte Carlo Convergence Suite
 # U(4) Precision Gauge Coupling Unification
-
+[![DOI](https://zenodo.org/badge/1213597114.svg)](https://doi.org/10.5281/zenodo.19895080)
 This repository contains the computational framework and numerical proofs for precision gauge coupling unification within the $U(4)$ Grand Unified Theory. 
 
 The codebase utilizes  3-loop Renormalization Group Equations (RGEs) to map the trajectories of the Standard Model gauge couplings ($\alpha_1, \alpha_2, \alpha_3$) from the electroweak scale up to the unification scale. It demonstrates that under the topological constraints of the $U(4)$ vacuum, the forces achieve flawless geometric unification and rigorously satisfy an exact integer quantization boundary condition.
