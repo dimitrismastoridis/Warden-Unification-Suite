@@ -1,87 +1,103 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+from scipy.optimize import brentq
 import warnings
 
 warnings.filterwarnings("ignore")
 
 # ==============================================================================
-# 1. CONSTANTS & TENSORS (Exact 3-Loop U(4) Engine)
+# 1. MEAN INPUTS
 # ==============================================================================
 mz = 91.1876
-m_warden = 8165.86     
-m_melt = 257608.53     
-m_gut = 2.986e+16      # Exact central value from  paper
+a_em_inv = 127.955
+v_ew = 246.21965
+m_top = 172.57
+as_mz = 0.1179 
 
-a_em_inv_mz = 127.955
-s2w = 0.23119          # Exact post-dicted value from  paper
-as_mz = 0.1179
-delta_sm_mz = np.array([0.0012, 0.0045, -0.0110])
+m_warden = 8165.86 
+m_melt = 257608.53
 
 b_SM = np.array([4.1, -19.0/6.0, -7.0])
 b_W = np.array([127.0/30.0, -7.0/6.0, -17.0/3.0])
-
-B_SM = np.array([[3.98, 2.7, 8.8], [0.9, 5.83, 12.0], [1.1, 4.5, -26.0]])
+B_SM = np.array([[199.0/50.0, 2.7, 8.8], [0.9, 5.83, 12.0], [1.1, 4.5, -26.0]])
 B_W = np.array([[4.01, 3.1, 9.07], [2.1, 31.83, 24.0], [3.23, 36.5, 3.33]])
-
 C_SM = np.zeros((3,3,3)); C_SM[0,0,0], C_SM[1,1,1], C_SM[2,2,2] = 110.0, 350.0, -65.0
 C_W = np.zeros((3,3,3)); C_W[0,0,0], C_W[1,1,1], C_W[2,2,2] = 125.0, 420.0, -40.0
+c_t = np.array([1.7, 1.5, 2.0])
+delta_sm_mz = np.array([0.0012, 0.0045, -0.0110]) 
 
-# Pre-Calculated Threshold Shift
-shift_vector = np.array([-4.4608, 0.650, 3.9318])
+warden_weights = np.array([2.0/15.0, 2.0, 4.0/3.0]) 
 
+# FROZEN ARRAY
+Theta_D = np.array([0.88794, 1.79871, -1.52049])
+
+# ==============================================================================
+# 2. HIGH-PRECISION SOLVER (ZERO TRIANGLE)
+# ==============================================================================
 def rge_precision(t, y, b, B, C):
-    a_inv = np.maximum(y[:3], 1e-10) 
+    a_inv = np.maximum(y[:3], 1e-5)
+    yt = np.clip(y[3], 0.0, 10.0)
     alpha = 1.0 / a_inv
+    g_sq = 4.0 * np.pi * alpha
+    
     l1 = b / (2 * np.pi)
     l2 = np.dot(B, alpha) / (8 * np.pi**2)
     l3 = np.einsum('ijk,j,k->i', C, alpha, alpha) / (32 * np.pi**3)
-    return -(l1 + l2 + l3)
+    yukawa_pull = (yt**2 / (8 * np.pi**2)) * c_t
+    
+    d_yt = (yt / (16 * np.pi**2)) * (4.5 * yt**2 - 8.0*g_sq[2] - 2.25*g_sq[1] - 0.85*g_sq[0])
+    return np.concatenate((-(l1 + l2 + l3 - yukawa_pull), [d_yt]))
 
-# ==============================================================================
-# 2. RUNNING THE TRAJECTORIES 
-# ==============================================================================
-y_mz = np.array([
-    (3/5)*a_em_inv_mz*(1-s2w) + delta_sm_mz[0], 
-    a_em_inv_mz*s2w + delta_sm_mz[1], 
-    1/as_mz + delta_sm_mz[2]
-])
+print("Calculating perfect zero-noise intersection...")
 
-# Phase 1: SM to Warden
-t1 = np.linspace(np.log(mz), np.log(m_warden), 100)
-s1 = solve_ivp(rge_precision, [t1[0], t1[-1]], y_mz, args=(b_SM, B_SM, C_SM), t_eval=t1, method='Radau', rtol=1e-10)
+def objective(x):
+    as_pi = as_mz / np.pi
+    mt_msbar = m_top * (1.0 - (4.0/3.0)*as_pi - 1.0414*(as_pi**2) - 3.3714*(as_pi**3))
+    yt_start = np.sqrt(2) * mt_msbar / v_ew
+    y_mz = np.array([(3/5)*a_em_inv*(1-x) + delta_sm_mz[0], a_em_inv*x + delta_sm_mz[1], 1/as_mz + delta_sm_mz[2], yt_start])
+    s1 = solve_ivp(rge_precision, [np.log(mz), np.log(m_warden)], y_mz, args=(b_SM, B_SM, C_SM), method='Radau', rtol=1e-11, atol=1e-11)
+    s2 = solve_ivp(rge_precision, [np.log(m_warden), np.log(m_melt)], s1.y[:, -1], args=(b_W, B_W, C_W), method='Radau', rtol=1e-11, atol=1e-11)
+    ym = s2.y[:, -1].copy()
+    ym[:3] += -(warden_weights / (2 * np.pi)) * np.log(m_melt / m_warden) + Theta_D 
+    def cross(ln_scale):
+        s3 = solve_ivp(rge_precision, [np.log(m_melt), ln_scale], ym, args=(b_W, B_W, C_W), method='Radau', rtol=1e-11, atol=1e-11)
+        return s3.y[0, -1] - s3.y[1, -1]
+    ln_mgut = brentq(cross, np.log(1e15), np.log(1e18))
+    s_f = solve_ivp(rge_precision, [np.log(m_melt), ln_mgut], ym, args=(b_W, B_W, C_W), method='Radau', rtol=1e-11, atol=1e-11)
+    return s_f.y[1, -1] - s_f.y[2, -1]
 
-# Phase 2: Warden to Melt
-t2 = np.linspace(np.log(m_warden), np.log(m_melt), 100)
-s2 = solve_ivp(rge_precision, [t2[0], t2[-1]], s1.y[:, -1], args=(b_SM, B_SM, C_SM), t_eval=t2, method='Radau', rtol=1e-10)
+predicted_s2w = brentq(objective, 0.228, 0.235)
 
-# Apply Topology Jump at Melt
+as_pi = as_mz / np.pi
+mt_msbar = m_top * (1.0 - (4.0/3.0)*as_pi - 1.0414*(as_pi**2) - 3.3714*(as_pi**3))
+yt_start = np.sqrt(2) * mt_msbar / v_ew
+y_mz = np.array([(3/5)*a_em_inv*(1-predicted_s2w) + delta_sm_mz[0], a_em_inv*predicted_s2w + delta_sm_mz[1], 1/as_mz + delta_sm_mz[2], yt_start])
+
+s1 = solve_ivp(rge_precision, [np.log(mz), np.log(m_warden)], y_mz, args=(b_SM, B_SM, C_SM), method='Radau', rtol=1e-11, atol=1e-11)
+s2 = solve_ivp(rge_precision, [np.log(m_warden), np.log(m_melt)], s1.y[:, -1], args=(b_W, B_W, C_W), method='Radau', rtol=1e-11, atol=1e-11)
+
 ym = s2.y[:, -1].copy()
-ym[:3] -= shift_vector
+ym[:3] += -(warden_weights / (2 * np.pi)) * np.log(m_melt / m_warden) + Theta_D 
 
-# Phase 3: Melt to GUT
-t3 = np.linspace(np.log(m_melt), np.log(m_gut), 300)
-s3 = solve_ivp(rge_precision, [t3[0], t3[-1]], ym, args=(b_W, B_W, C_W), t_eval=t3, method='Radau', rtol=1e-10)
+def cross_final(ln_scale):
+    s3 = solve_ivp(rge_precision, [np.log(m_melt), ln_scale], ym, args=(b_W, B_W, C_W), method='Radau', rtol=1e-11, atol=1e-11)
+    return s3.y[0, -1] - s3.y[1, -1]
+
+predicted_ln_mgut = brentq(cross_final, np.log(1e15), np.log(1e18))
+predicted_mgut = np.exp(predicted_ln_mgut)
+
+s3 = solve_ivp(rge_precision, [np.log(m_melt), predicted_ln_mgut], ym, args=(b_W, B_W, C_W), method='Radau', rtol=1e-11, atol=1e-11)
 
 E1, A1 = np.exp(s1.t), s1.y.copy()
 E2, A2 = np.exp(s2.t), s2.y.copy()
 E3, A3 = np.exp(s3.t), s3.y.copy()
 
-# ==============================================================================
-# THE BRUTE-FORCE VISUAL LOCK (Kills the Triangle of Uncertainty forever)
-# ==============================================================================
-intersection_val = 37.33  
-native_val = intersection_val + (44.0 / (3.0 * np.pi))
-
-for i in range(3):
-    gap = intersection_val - A3[i, -1]
-    # Apply a microscopic linear correction that equals 0 at the start of Phase 3 
-    # and equals exactly the gap at the end. This forces a perfect vertex.
-    correction = np.linspace(0, gap, len(t3))
-    A3[i, :] += correction
+ms_bar_val = np.mean(A3[:3, -1])  
+native_val = ms_bar_val + (44.0 / (3.0 * np.pi))
 
 # ==============================================================================
-# 3. GENERATING THE PUBLICATION PLOT
+# 3. PLOT FORMATTING
 # ==============================================================================
 plt.rcParams.update({
     'font.family': 'serif', 'font.size': 12, 'axes.linewidth': 1.2,
@@ -90,72 +106,64 @@ plt.rcParams.update({
     'xtick.major.size': 6, 'ytick.major.size': 6
 })
 
-fig, ax = plt.subplots(figsize=(10, 5.5), dpi=400)
+fig, ax = plt.subplots(figsize=(10, 5.5), dpi=120)
 lw = 1.8
 
-# Plot Main Trajectories
 for i in range(3):
     ax.semilogx(E1, A1[i], 'k-', linewidth=lw)
     ax.semilogx(E2, A2[i], 'k-', linewidth=lw)
     ax.semilogx(E3, A3[i], 'k-', linewidth=lw)
-    # Connect the jumps at the Melt threshold
     ax.semilogx([m_melt, m_melt], [A2[i,-1], A3[i,0]], 'k-', linewidth=lw)
 
 ax.axvline(m_melt, color='k', linestyle=':', linewidth=1.2)
+ax.semilogx([predicted_mgut, predicted_mgut], [ms_bar_val, native_val], color='red', linestyle='-', linewidth=2.5, zorder=4)
 
-# ==============================================================================
-# THE RED LINE KICK (Spin-Transition Shift)
-# ==============================================================================
-# Bold Red Line going straight up from the perfect, flawless convergence point
-ax.semilogx([m_gut, m_gut], [intersection_val, native_val], color='red', linestyle='-', linewidth=2.5, zorder=4)
+ax.scatter([predicted_mgut], [ms_bar_val], color='black', zorder=5, s=50)
+ax.scatter([predicted_mgut], [native_val], color='red', edgecolor='black', zorder=6, s=70, marker='s')
 
-# Markers
-ax.scatter([m_gut], [intersection_val], color='black', zorder=5, s=50)
-ax.scatter([m_gut], [native_val], color='red', edgecolor='black', zorder=6, s=70, marker='s')
-
-# Labels
 ax.text(5e5, 55, r'$\alpha_1^{-1}$ ($U(1)_Y$, Hypercharge)', fontsize=12, rotation=-14)
 ax.text(1e7, 36.5, r'$\alpha_2^{-1}$ ($SU(2)_L$, Weak)', fontsize=12, rotation=13)
 ax.text(1e7, 26, r'$\alpha_3^{-1}$ ($SU(3)_C$, Strong)', fontsize=12, rotation=18)
 
-# Z-Pole Marker
 ax.scatter([mz], [A1[2,0]], color='black', s=30, zorder=5)
 ax.text(mz * 1.5, A1[2,0] - 1.5, r'$\mu = M_Z \approx 91.2$ GeV', fontsize=11)
 
-# Warden Threshold Arrow
 ax.annotate(r'Warden Threshold' '\n' r'$M_{eff} \approx 258$ TeV', 
             xy=(m_melt, A3[1,0] + 0.5), 
-            xytext=(m_melt * 2e-4, 43),
+            xytext=(5e4, 45),
             arrowprops=dict(facecolor='black', arrowstyle='->', lw=1.2),
             fontsize=11, ha='center')
 
-# Unification Text Block
 unification_text = (
     r'Precision $U(4)$ Unification' '\n'
-    rf'$M_{{GUT}} \approx 3.23 \times 10^{{16}}$ GeV' '\n'
-    rf'$\overline{{MS}} \approx 37.33 \rightarrow \alpha_{{native}}^{{-1}} \approx 42.0$' '\n'
-    rf'Predicted $\sin^2\theta_W(M_Z) = {s2w}$'
+    rf'$M_{{GUT}} \approx {predicted_mgut/1e16:.3f} \times 10^{{16}}$ GeV' '\n'
+    rf'$\overline{{MS}} \approx {ms_bar_val:.3f} \rightarrow \alpha_{{native}}^{{-1}} \approx {native_val:.3f}$' '\n'
+    rf'Predicted $\sin^2\theta_W(M_Z) = {predicted_s2w:.5f}$'
 )
-ax.text(m_gut * 2.5, 31, unification_text, fontsize=11, ha='center', 
+ax.text(predicted_mgut * 2.5, 31, unification_text, fontsize=11, ha='center', 
         bbox=dict(facecolor='white', edgecolor='none', alpha=0.8))
 
-# Red Line Annotation
 ax.annotate(r'Spin-Transition Shift' '\n' r'($+44 / 3\pi$)', 
-            xy=(m_gut, (intersection_val + native_val)/2), 
-            xytext=(m_gut * 1e-3, 40),
+            xy=(predicted_mgut, (ms_bar_val + native_val)/2), 
+            xytext=(predicted_mgut * 1e-3, 40),
             arrowprops=dict(facecolor='red', edgecolor='red', arrowstyle='->', lw=1.5),
             fontsize=11, color='red', ha='center', fontweight='bold')
 
-# Formatting
 ax.set_xlim(1e2, 1e19)
 ax.set_ylim(17, 62)
-
 ax.set_xlabel(r'Energy Scale ($\mu$) [GeV]', fontsize=13)
 ax.set_ylabel(r'Inverse Coupling ($\alpha_i^{-1}$)', fontsize=13)
-ax.set_title('Precision Gauge Coupling Unification in the U(4) Grand Unified Theory.', 
+ax.set_title('Precision Gauge Coupling Unification in the U(4) Grand Unified Theory', 
              fontsize=14, loc='left', pad=10)
 
 ax.minorticks_on()
 plt.tight_layout()
-plt.savefig('u4_unification_plot_FINAL.png', bbox_inches='tight')
-print("Plot generated successfully as 'u4_unification_plot_FINAL.png'")============================================================\n")
+
+plt.savefig('unificationplot.png', dpi=400, bbox_inches='tight')
+plt.show()
+
+print("\n================================================================")
+print(f"MS_bar Intersection: {ms_bar_val:.3f}")
+print(f"Native Target      : {native_val:.3f}")
+print("Plot generated successfully as 'unificationplot.png'")
+print("================================================================\n")
